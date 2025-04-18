@@ -1,21 +1,27 @@
-// servidor.js com Firebase Firestore
+// servidor.js com MySQL e tratamento de erros aprimorado
 const express = require("express");
 const cors = require("cors");
-const admin = require("firebase-admin");
 const path = require("path");
+const mysql = require("mysql2/promise");
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// Firebase Admin Init
-const serviceAccount = require("./firebase-key.json");
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+// Conexão com o banco MySQL (Railway ou outro)
+const dbConfig = {
+  host: "switchback.proxy.rlwy.net",
+  user: "root",
+  password: "XGHNbPlETOYsCGhxymjHVeJmVaTZdtiZ",
+  database: "railway",
+  port: 54582
+};
 
-const db = admin.firestore();
+let db;
+(async () => {
+  db = await mysql.createConnection(dbConfig);
+})();
 
 // Rota principal
 app.get("/", (req, res) => {
@@ -24,81 +30,110 @@ app.get("/", (req, res) => {
 
 // CATEGORIAS
 
-// Criar nova categoria (evita duplicatas)
 app.post("/categorias", async (req, res) => {
-  const { nome } = req.body;
-  if (!nome) return res.status(400).json({ error: "Nome da categoria é obrigatório." });
+  try {
+    const { nome } = req.body;
+    if (!nome) return res.status(400).json({ error: "Nome da categoria é obrigatório." });
 
-  const snapshot = await db.collection("categorias").where("nome", "==", nome).get();
-  if (!snapshot.empty) {
-    return res.status(400).json({ error: "Categoria já existe!" });
+    const [rows] = await db.execute("SELECT * FROM categorias WHERE nome = ?", [nome]);
+    if (rows.length > 0) {
+      return res.status(400).json({ error: "Categoria já existe!" });
+    }
+
+    await db.execute("INSERT INTO categorias (nome) VALUES (?)", [nome]);
+    res.json({ message: "Categoria cadastrada com sucesso!" });
+  } catch (err) {
+    console.error("Erro ao cadastrar categoria:", err);
+    res.status(500).json({ error: "Erro interno no servidor." });
   }
-
-  const docRef = await db.collection("categorias").add({ nome });
-  res.json({ id: docRef.id, nome, message: "Categoria cadastrada com sucesso!" });
 });
 
-// Listar todas as categorias
 app.get("/categorias", async (req, res) => {
-  const snapshot = await db.collection("categorias").get();
-  const categorias = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  res.json(categorias);
+  try {
+    const [categorias] = await db.execute("SELECT * FROM categorias");
+    res.json(categorias);
+  } catch (err) {
+    console.error("Erro ao listar categorias:", err);
+    res.status(500).json({ error: "Erro interno ao listar categorias." });
+  }
 });
 
-// Excluir categoria
 app.delete("/categorias/:id", async (req, res) => {
-  const { id } = req.params;
-  await db.collection("categorias").doc(id).delete();
-  res.json({ message: "Categoria excluída com sucesso!" });
+  try {
+    const { id } = req.params;
+    await db.execute("DELETE FROM categorias WHERE id = ?", [id]);
+    res.json({ message: "Categoria excluída com sucesso!" });
+  } catch (err) {
+    console.error("Erro ao excluir categoria:", err);
+    res.status(500).json({ error: "Erro interno ao excluir categoria." });
+  }
 });
 
 // PRATOS
 
-// Criar prato associando a uma categoria existente
 app.post("/pratos", async (req, res) => {
-  const { nome, preco, categoriaId, restaurant_id } = req.body;
-  if (!nome || !preco || !categoriaId || !restaurant_id) {
-    return res.status(400).json({ error: "Todos os campos são obrigatórios!" });
+  try {
+    const { nome, preco, categoriaId, restaurant_id } = req.body;
+    const categoriaIdNum = parseInt(categoriaId, 10);
+
+    if (!nome || !preco || !categoriaId || !restaurant_id) {
+      return res.status(400).json({ error: "Todos os campos são obrigatórios!" });
+    }
+
+    const [catRows] = await db.execute("SELECT nome FROM categorias WHERE id = ?", [categoriaIdNum]);
+    if (catRows.length === 0) {
+      return res.status(400).json({ error: "Categoria não encontrada." });
+    }
+
+    const categoriaNome = catRows[0].nome;
+
+    await db.execute(
+      "INSERT INTO pratos (nome, preco, categoriaId, categoria, restaurant_id) VALUES (?, ?, ?, ?, ?)",
+      [nome, preco, categoriaIdNum, categoriaNome, restaurant_id]
+    );
+
+    res.json({ message: "Prato cadastrado com sucesso!" });
+
+  } catch (err) {
+    console.error("Erro ao cadastrar prato:", err);
+    res.status(500).json({ error: "Erro interno no servidor." });
   }
-
-  const categoriaDoc = await db.collection("categorias").doc(categoriaId).get();
-  if (!categoriaDoc.exists) return res.status(400).json({ error: "Categoria não encontrada." });
-
-  const categoriaNome = categoriaDoc.data().nome;
-
-  const prato = {
-    nome,
-    preco: parseFloat(preco),
-    categoria: categoriaNome,
-    categoriaId,
-    restaurant_id
-  };
-
-  const result = await db.collection("pratos").add(prato);
-  res.json({ id: result.id, ...prato, message: "Prato cadastrado com sucesso!" });
 });
 
-// Listar todos os pratos
 app.get("/pratos", async (req, res) => {
-  const snapshot = await db.collection("pratos").get();
-  const pratos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  res.json(pratos);
+  try {
+    const [pratos] = await db.execute("SELECT * FROM pratos");
+    res.json(pratos);
+  } catch (err) {
+    console.error("Erro ao listar pratos:", err);
+    res.status(500).json({ error: "Erro interno ao listar pratos." });
+  }
 });
 
-// Excluir prato
 app.delete("/pratos/:id", async (req, res) => {
-  const { id } = req.params;
-  await db.collection("pratos").doc(id).delete();
-  res.json({ message: "Prato excluído com sucesso!" });
+  try {
+    const { id } = req.params;
+    await db.execute("DELETE FROM pratos WHERE id = ?", [id]);
+    res.json({ message: "Prato excluído com sucesso!" });
+  } catch (err) {
+    console.error("Erro ao excluir prato:", err);
+    res.status(500).json({ error: "Erro interno ao excluir prato." });
+  }
 });
 
-// Atualizar preço do prato
 app.put("/pratos/:id/preco", async (req, res) => {
-  const { id } = req.params;
-  const { preco } = req.body;
-  await db.collection("pratos").doc(id).update({ preco: parseFloat(preco) });
-  res.json({ message: "Preço atualizado com sucesso!" });
+  try {
+    const { id } = req.params;
+    const { preco } = req.body;
+    await db.execute("UPDATE pratos SET preco = ? WHERE id = ?", [preco, id]);
+    res.json({ message: "Preço atualizado com sucesso!" });
+  } catch (err) {
+    console.error("Erro ao atualizar preço:", err);
+    res.status(500).json({ error: "Erro interno ao atualizar preço." });
+  }
 });
 
 // Inicialização do servidor
 app.listen(3000, () => console.log("Servidor rodando na porta 3000!"));
+
+
